@@ -1,131 +1,253 @@
+# 🎭 HoloLiveTL - Real-Time Japanese Translation for VTuber Streams
 
+<div align="center">
 
-# LiveTranslate.py: Real-Time Japanese to English Subtitle Overlay
+![Python](https://img.shields.io/badge/python-v3.8+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+![AI](https://img.shields.io/badge/AI-Whisper%20%2B%20VAD-orange.svg)
 
-LiveTranslate.py is a real-time, on-screen translator that captures your computer's audio, translates spoken Japanese into English text, and displays it as a customizable subtitle overlay. It's perfect for watching Japanese livestreams, videos, or online meetings without native English subtitles.
+*Real-time Japanese to English subtitle overlay for VTuber livestreams and Japanese content*
 
-The application uses the powerful `kotoba-tech/kotoba-whisper-bilingual-v1.0` model for high-quality, context-aware translation and features an intelligent, VAD-based (Voice Activity Detection) audio chunking system for efficient and natural-looking subtitles.
+[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [VTuber Setup](#-vtuber-setup-guide) • [Building](#-building)
+
+</div>
+
+## 🌟 Overview
+
+HoloLiveTL is a powerful real-time translation application that captures your computer's audio, translates spoken Japanese into English text, and displays it as a customizable subtitle overlay. Perfect for watching Japanese VTuber livestreams, anime, or any Japanese content without native English subtitles.
+
+Built with the state-of-the-art `kotoba-tech/kotoba-whisper-bilingual-v1.0` model and featuring intelligent Voice Activity Detection (VAD) for natural, context-aware translations.
 
 ## ✨ Features
 
-  * **Real-Time Translation**: Translates Japanese speech to English text with minimal delay.
-  * **On-Screen Overlay**: Displays subtitles in a clean, movable, and customizable window that can be placed over any application.
-  * **Dynamic Audio Chunking**: Uses Silero VAD to intelligently detect speech, creating perfectly timed subtitle chunks based on natural pauses. This is more efficient and accurate than fixed-time slicing.
-  * **Highly Customizable Subtitles**:
-      * Adjust font size, weight (bold/normal), and color.
-      * Change the background color and opacity.
-      * Choose between a solid background or a transparent window.
-      * Enable a text shadow for better readability.
-  * **Audio Device Selection**: Automatically detects loopback audio devices (like "Stereo Mix" or "VB-CABLE") but allows manual selection from all available sound inputs.
-  * **Hallucination Filtering**: Includes filters to remove common ASR model hallucinations (e.g., "Thanks for watching\!", "Please subscribe").
-  * **Easy-to-Use GUI**: A simple control panel built with Tkinter to manage all settings and start/stop the translator.
-  * **Settings & Presets**: All your settings are automatically saved. You can also save and load different configurations as presets for various use cases.
-  * **Performance**: Optimized for real-time use, with GPU (CUDA) acceleration supported for the best performance.
+### 🎯 Core Translation Features
+- **Real-Time Translation**: Minimal delay Japanese-to-English translation
+- **Advanced AI Models**: Uses Kotoba Whisper for high-quality, context-aware translation
+- **Dynamic Audio Chunking**: Intelligent VAD-based speech detection for natural subtitle timing
+- **Hallucination Filtering**: Removes common ASR artifacts and false positives
+- **VTuber Optimized**: Special filters and optimizations for VTuber content
 
-## ⚙️ How It Works
+### 🎨 Customizable Overlay
+- **Movable Subtitle Window**: Drag and position anywhere on screen
+- **Full Appearance Control**: Font size, weight, color, and shadow options
+- **Background Modes**: Transparent or solid background with opacity control
+- **Real-time Updates**: Instant subtitle appearance changes
 
-The application operates through a multi-threaded pipeline:
+### 🔧 Advanced Audio Processing
+- **Smart Device Detection**: Auto-detects loopback devices (Stereo Mix, VB-Cable)
+- **Multiple Audio Sources**: Support for virtual audio cables and system audio
+- **Noise Filtering**: Advanced audio preprocessing for better recognition
+- **Volume Threshold Control**: Adjustable sensitivity for different audio levels
 
-1.  **Audio Capture**: A **Recorder Thread** listens to the selected audio device (e.g., your system's audio output).
-2.  **Voice Activity Detection (VAD)**: In the recommended **Dynamic Mode**, this thread uses a VAD model to listen for speech. It records as long as speech is detected, then sends the complete voice segment for processing once a pause is heard. This ensures that full sentences are captured.
-3.  **Processing**: A **Processor Thread** receives the audio chunk. It runs the powerful Whisper ASR model to transcribe and translate the Japanese speech into English text.
-4.  **Filtering & Display**: The resulting text is filtered for common hallucinations and then sent to the **GUI Thread**, which updates the on-screen subtitle overlay instantly.
+### 💾 Convenience Features
+- **Settings Persistence**: All configurations automatically saved
+- **Preset System**: Save and load different configurations for various use cases
+- **Subtitle History**: Copy last subtitle or save entire session transcript
+- **Performance Monitoring**: Built-in statistics and logging
+- **GPU Acceleration**: CUDA support for optimal performance
 
 ## 🚀 Installation
 
 ### Prerequisites
+- **Python 3.8+**
+- **NVIDIA GPU with CUDA** (highly recommended for real-time performance)
+- **Virtual Audio Device** (VB-Cable recommended) or Stereo Mix enabled
 
-  * **Python 3.8+**
-  * **Git** (for cloning the repository)
-  * **An NVIDIA GPU with CUDA** is *highly recommended* for smooth real-time performance. The application will run on a CPU, but it may be significantly slower.
-  * **(Optional but Recommended) A virtual audio device** like [VB-CABLE](https://vb-audio.com/Cable/) to easily route desktop audio.
+### Quick Setup
 
-### Setup Instructions
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Shemo37/HoloLiveTL.git
+   cd HoloLiveTL
+   ```
 
-1.  **Clone the repository:**
+2. **Install PyTorch with CUDA:**
+   ```bash
+   # Visit https://pytorch.org/get-started/locally/ for your specific CUDA version
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   ```
 
-    ```bash
-    git clone https://github.com/Shemo37/HoloLiveTL.git
-    cd LiveTranslate.py
-    ```
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-2.  **Create a virtual environment (recommended):**
+4. **Run the application:**
+   ```bash
+   python LiveTranslate.py
+   ```
 
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-    ```
+### First Run
+- Click **"Download Model"** to pre-download AI models (~1-2GB)
+- Configure your audio device (see setup guides below)
+- Click **"Start"** to begin translation
 
-3.  **Install PyTorch with CUDA support:**
-    Visit the [official PyTorch website](https://pytorch.org/get-started/locally/) to get the correct installation command for your specific CUDA version. An example command is:
+## 🎮 Usage
 
-    ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    ```
+### Basic Operation
+1. **Configure Audio Source**: Select your loopback device from the dropdown
+2. **Adjust Settings**: Customize translation and appearance settings
+3. **Start Translation**: Click "Start" - a subtitle overlay will appear
+4. **Position Overlay**: Drag the subtitle window to your preferred location
+5. **Enjoy**: Play Japanese content and watch real-time translations appear
 
-4.  **Install the remaining dependencies:**
-    A `requirements.txt` is provided for convenience.
+### Subtitle Window Controls
+- **Drag**: Click and drag to reposition
+- **Ctrl+C**: Copy current subtitle to clipboard
+- **Ctrl+S**: Save entire session transcript
+- **Esc**: Stop translation immediately
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+## 🎭 VTuber Setup Guide
 
-## ▶️ Usage
+### Audio Capture Setup
 
-1.  **Configure Your Audio:**
+#### Option A: VB-Cable (Recommended)
+1. Download and install [VB-Audio Virtual Cable](https://vb-audio.com/Cable/)
+2. Set "CABLE Input" as your default Windows playback device
+3. In LiveTranslate, select "CABLE Output" as audio device
+4. Stream audio will now be captured automatically
 
-      * **Method A (Recommended - VB-CABLE):** Install VB-CABLE. Set `CABLE Input` as your default Windows audio playback device. This will route all desktop sound through the virtual cable.
-      * **Method B (Stereo Mix):** Enable the "Stereo Mix" or "What U Hear" recording device in your Windows sound settings and set it as the default recording device.
+#### Option B: Stereo Mix
+1. Enable "Stereo Mix" in Windows Sound Settings
+2. Set as default recording device
+3. Select "Stereo Mix" in LiveTranslate
+4. Captures all system audio including streams
 
-2.  **Run the application:**
+### Optimal Settings for VTuber Streams
 
-    ```bash
-    python LiveTranslate.py
-    ```
+```
+✅ Dynamic Chunking: Enabled
+   - Silence Timeout: 0.8-1.2s
+   - Max Record Time: 12-15s
+   - Min Speech Duration: 0.3s
 
-3.  **Using the Control Panel:**
+✅ VAD Filter: Enabled (50-60% threshold)
+✅ Volume Threshold: 0.003-0.005
+✅ Hallucination Filtering: Enabled
+```
 
-      * On the first run, it's recommended to click the **Download Model** button. This will pre-download all necessary AI models and avoid a long delay when you first click "Start". Watch the console for progress.
-      * Select your audio loopback device (e.g., `CABLE Output (VB-Audio Virtual Cable)` or `Stereo Mix`) from the dropdown menu.
-      * Adjust any settings as needed. The defaults are a great starting point.
-      * Click **Start**.
-      * A semi-transparent subtitle window will appear. You can click and drag this window to position it anywhere on your screen.
-      * Play any Japanese audio on your computer. The English translation will appear in the overlay window.
-      * Click **Stop** to end the translation.
+### Stream-Specific Presets
+- **Chatting Streams**: Higher confidence (75-80%)
+- **Gaming Streams**: Enable noise filtering
+- **Singing Streams**: Lower confidence during songs
+- **ASMR Streams**: Increased sensitivity settings
 
-### Subtitle Window Hotkeys
+## 🔧 Configuration
 
-  * `Ctrl + C`: Copy the last subtitle to the clipboard.
-  * `Ctrl + S`: Save the entire transcript history of the current session to a `.txt` file.
-  * `Esc`: Immediately stop the translator.
+### Dynamic Chunking (Recommended)
+- **Enable Dynamic Chunks**: Uses VAD for natural speech boundaries
+- **Silence Timeout**: Pause duration before processing (0.8-1.5s)
+- **Max Record Time**: Safety limit for long recordings (10-15s)
+- **Min Speech Duration**: Filters very short sounds (0.3s)
 
-## 🔧 Configuration Tips
+### Audio Filters
+- **Volume Threshold**: Minimum audio level to trigger processing
+- **VAD Filter**: Secondary speech detection for accuracy
+- **VAD Threshold**: Sensitivity of voice activity detection
 
-  * **Dynamic Chunking Settings**: This is the most important section for performance.
-      * **Enable Dynamic Chunks**: Keep this checked for the best results.
-      * **Silence Timeout (s)**: How long of a pause the app should wait for before processing a sentence. `0.8` - `1.5` seconds is usually good.
-      * **Max Record Time (s)**: A safeguard to process a chunk even if there are no pauses. Prevents infinitely long chunks.
-  * **Audio Filter Settings**:
-      * **Volume Threshold**: Adjust this if the app is picking up background noise or missing quiet speech. Use the console output (which shows RMS volume) to find a good value.
-      * **Enable VAD Filter**: Acts as a secondary check to ensure a chunk contains speech. It's useful in both dynamic and fixed modes.
-  * **Appearance**:
-      * **BG Mode**: `transparent` makes the entire window see-through (controlled by Opacity), while `solid` makes only the text background see-through.
-      * **Text Shadow**: Highly recommended for readability on any background.
+### Appearance
+- **Font Settings**: Size, weight (normal/bold), color
+- **Background**: Transparent or solid with opacity control
+- **Text Shadow**: Improves readability over any background
+- **Window Opacity**: Overall transparency level
 
-## ⚠️ Troubleshooting
+## 📁 Project Structure
 
-  * **No Audio Devices Found**: Ensure you have enabled "Stereo Mix" or installed a virtual audio cable.
-  * **Error During Startup / Model Download**: Your internet connection may be blocked by a firewall, or a dependency might be missing. Check the `translator_app.log` file for detailed error messages.
-  * **Laggy / Slow Translation**:
-      * Confirm that PyTorch was installed correctly with CUDA support. The console will print `Using device: CUDA:0` if it's working.
-      * Close other resource-intensive applications.
-      * If you are on a CPU, translation will inherently be slower.
-  * **Poor Translation Quality**: The quality depends entirely on the underlying Whisper model. Clear, non-overlapping speech with low background noise will produce the best results.
+```
+HoloLiveTL/
+├── LiveTranslate.py          # Main application
+├── requirements.txt          # Python dependencies
+├── build_*.py               # Build scripts for executables
+├── presets/                 # Configuration presets
+│   ├── VTuber_Chatting.json
+│   ├── VTuber_Gaming.json
+│   └── VTuber_Singing.json
+├── VTUBER_SETUP_GUIDE.md    # Detailed VTuber setup instructions
+├── TV_AUDIO_SETUP_GUIDE.md  # TV/system audio setup
+└── BUILD_README.md          # Executable building instructions
+```
+
+## 🏗️ Building
+
+### Quick Build
+```bash
+python advanced_build.py    # Complete distribution package
+python build_exe.py         # Basic executable
+quick_build.bat             # Windows batch build
+```
+
+### Manual Build
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name "LiveTranslate" LiveTranslate.py
+```
+
+See [BUILD_README.md](BUILD_README.md) for detailed building instructions.
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**No Audio Detected**
+- Verify audio device selection
+- Check Windows audio settings
+- Test with different audio source
+
+**Poor Translation Quality**
+- Ensure clear, non-overlapping speech
+- Adjust confidence thresholds
+- Check background noise levels
+- Verify CUDA GPU acceleration
+
+**Performance Issues**
+- Install CUDA-enabled PyTorch
+- Close resource-intensive applications
+- Lower audio quality settings if needed
+
+**Model Download Fails**
+- Check internet connection
+- Verify firewall settings
+- Try manual model download
+
+### Getting Help
+- Check the console output for detailed error messages
+- Review `translator_app.log` for debugging information
+- Ensure all dependencies are properly installed
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+### Development Setup
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
 
 ## 📄 License
 
-This project is licensed under the MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
------
+## 🙏 Acknowledgments
 
+- **Kotoba Technologies** for the excellent bilingual Whisper model
+- **Silero Team** for the VAD model
+- **Hugging Face** for the transformers library
+- **VTuber Community** for inspiration and feedback
+- **OpenAI** for the original Whisper architecture
 
+## 🌟 Star History
+
+If you find this project helpful, please consider giving it a star! ⭐
+
+---
+
+<div align="center">
+
+**Made with ❤️ for the VTuber community**
+
+[Report Bug](https://github.com/Shemo37/HoloLiveTL/issues) • [Request Feature](https://github.com/Shemo37/HoloLiveTL/issues) • [Join Discussion](https://github.com/Shemo37/HoloLiveTL/discussions)
+
+</div>
