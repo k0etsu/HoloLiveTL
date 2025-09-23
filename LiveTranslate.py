@@ -41,10 +41,10 @@ MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 5 
 LANGUAGE_CODE = "en"
-VOLUME_THRESHOLD = 0.007
+VOLUME_THRESHOLD = 0.003  # Even lower threshold for loud sound detection
 
 USE_VAD_FILTER = True
-VAD_THRESHOLD = 0.5
+VAD_THRESHOLD = 0.25  # Even lower threshold for better loud sound detection
 DEFAULT_BG_COLOR = '#282828'
 DEFAULT_FONT_COLOR = '#FFFFFF'
 DEFAULT_BG_MODE = 'transparent'
@@ -55,13 +55,37 @@ SUBSTRING_HALLUCINATION_FILTER = [
     "thank you for watching", "thanks for watching", "don't forget",
     "to subscribe", "subscribe", "bell icon", "see you next time",
     "in the next video", "like and subscribe", "hit the bell",
-    "comment below", "let me know", "see you later", "as a language model", "provide more context"
+    "comment below", "let me know", "see you later", "as a language model", 
+    "provide more context", "i'm an ai", "i cannot", "i don't have access",
+    "please provide", "more information", "context is needed"
 ]
 EXACT_MATCH_HALLUCINATION_FILTER = {
     "i see", "i understand", "i know", "i'm sorry", "thank you", "thanks",
     "you're welcome", "okay", "ok", "all right", "alright", "got it", "right",
     "of course", "excuse me", "please", "the end", "hello", "hi", "hey",
-    "um", "uh", "hmm", "well", "so", "like", "you know", "that's right", "such as", "I see, I see", "alright i see","ah i see","sound good","oh i see","Heav-ho"
+    "um", "uh", "hmm", "well", "so", "like", "you know", "that's right", 
+    "such as", "i see, i see", "alright i see", "ah i see", "sound good", 
+    "oh i see", "heav-ho", "mm-hmm", "uh-huh", "yeah", "yep", "nope", "nah"
+}
+
+# Sounds that should NOT be filtered (including screams, exclamations, VTuber expressions)
+PRESERVE_SOUNDS = {
+    "ah", "oh", "wow", "no", "yes", "stop", "help", "wait", "go", "come",
+    "aah", "ooh", "eeh", "kyaa", "waa", "haa", "yaa", "noo", "ahh", "ohh",
+    # VTuber-specific expressions
+    "nya", "uwu", "owo", "ara", "ehe", "ehehe", "hehe", "hihi", "hoho",
+    "yay", "yey", "yup", "nope", "mhm", "mmm", "hmm", "huh", "eh",
+    # Gaming expressions
+    "gg", "nice", "good", "bad", "fail", "win", "lose", "dead", "alive",
+    # Japanese expressions commonly used
+    "hai", "iie", "sou", "nani", "mou", "demo", "kedo", "desu", "masu"
+}
+
+# Patterns that indicate low-quality transcription
+QUALITY_INDICATORS = {
+    "repetitive_patterns": [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}"],  # Repeated words/phrases
+    "nonsense_patterns": [r"[a-z]{15,}", r"\b\w{1}\s+\w{1}\s+\w{1}\b"],  # Very long words or single letters
+    "filler_heavy": [r"\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b"]  # Too many fillers
 }
 
 
@@ -95,9 +119,9 @@ class Config:
             "output_mode": "translate",
             "selected_audio_device": None,
             "use_dynamic_chunking": True,
-            "dynamic_max_chunk_duration": 12.0,
-            "dynamic_silence_timeout": 0.8,
-            "dynamic_min_speech_duration": 0.3
+            "dynamic_max_chunk_duration": 15.0,  # Longer chunks for better context
+            "dynamic_silence_timeout": 1.2,      # More patience for natural pauses
+            "dynamic_min_speech_duration": 0.3   # Allow shorter sounds including screams
         }
         if os.path.exists(self.config_file):
             try:
@@ -232,15 +256,26 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
                 
               
                 rms = np.sqrt(np.mean(frame_data ** 2))
-                if rms < config.volume_threshold:
+                
+                # Enhanced detection for loud sounds
+                peak_level = np.max(np.abs(frame_data))
+                is_loud_sound = peak_level > 0.1  # Detect sudden loud sounds
+                
+                if rms < config.volume_threshold and not is_loud_sound:
                     is_speech = False
                 else:
-                
+                    # Use VAD model for speech detection
                     audio_tensor = torch.from_numpy(frame_data.flatten()).float()
                     if len(audio_tensor) < 512:
                         audio_tensor = torch.nn.functional.pad(audio_tensor, (0, 512 - len(audio_tensor)))
                     speech_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
-                    is_speech = speech_prob > config.vad_threshold
+                    
+                    # Lower threshold for loud sounds, normal threshold for regular speech
+                    vad_threshold = config.vad_threshold * 0.5 if is_loud_sound else config.vad_threshold
+                    is_speech = speech_prob > vad_threshold or is_loud_sound
+                    
+                    if is_loud_sound:
+                        print(f"🔊 Loud sound detected! Peak: {peak_level:.3f}, RMS: {rms:.3f}, VAD: {speech_prob:.3f}")
 
              
                 if is_speaking:
@@ -260,9 +295,20 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
                         chunk_duration_s = len(audio_chunk) / SAMPLE_RATE
                         
                 
-                        if chunk_duration_s > config.dynamic_min_speech_duration and len(audio_chunk) >= int(SAMPLE_RATE * 1.0):  
-                            print(f"🎤 Detected speech chunk of {chunk_duration_s:.2f}s. Sending for processing.")
+                        # Check if this chunk contains loud sounds
+                        chunk_peak = np.max(np.abs(audio_chunk))
+                        is_loud_chunk = chunk_peak > 0.1
+                        
+                        # More lenient requirements for loud chunks
+                        min_duration = config.dynamic_min_speech_duration * 0.5 if is_loud_chunk else config.dynamic_min_speech_duration
+                        min_samples = int(SAMPLE_RATE * 0.5) if is_loud_chunk else int(SAMPLE_RATE * 1.0)
+                        
+                        if chunk_duration_s > min_duration and len(audio_chunk) >= min_samples:
+                            chunk_type = "LOUD" if is_loud_chunk else "speech"
+                            print(f"🎤 Detected {chunk_type} chunk of {chunk_duration_s:.2f}s (peak: {chunk_peak:.3f}). Sending for processing.")
                             audio_queue.put(audio_chunk)
+                        else:
+                            print(f"⏩ Skipped short chunk: {chunk_duration_s:.2f}s (peak: {chunk_peak:.3f})")
                         
                      
                         is_speaking = False
@@ -290,6 +336,99 @@ def highpass_filter(data, cutoff=100, fs=16000, order=5):
     y = lfilter(b, a, data)
     return y
 
+def normalize_audio(audio_data):
+    """Normalize audio to improve recognition accuracy while preserving loud sounds"""
+    # Remove DC offset
+    audio_data = audio_data - np.mean(audio_data)
+    
+    # Use RMS-based normalization instead of peak normalization for better loud sound handling
+    rms = np.sqrt(np.mean(audio_data ** 2))
+    if rms > 0:
+        # Target RMS level (preserve dynamics for loud sounds)
+        target_rms = 0.3
+        audio_data = audio_data * (target_rms / rms)
+    
+    # Gentle soft limiting only for extreme peaks
+    audio_data = np.where(np.abs(audio_data) > 0.95, 
+                         np.sign(audio_data) * (0.95 + 0.05 * np.tanh((np.abs(audio_data) - 0.95) * 10)), 
+                         audio_data)
+    
+    return audio_data
+
+def enhance_audio_quality(audio_data, sample_rate=16000):
+    """Apply audio enhancements for better speech recognition including loud sounds"""
+    # Apply high-pass filter to remove low-frequency noise (less aggressive)
+    audio_data = highpass_filter(audio_data, cutoff=60, fs=sample_rate, order=3)
+    
+    # Normalize audio (preserves loud sound dynamics)
+    audio_data = normalize_audio(audio_data)
+    
+    # Very gentle noise gate that doesn't affect loud sounds
+    threshold = 0.005  # Lower threshold to catch more sounds
+    audio_data = np.where(np.abs(audio_data) < threshold, 
+                         audio_data * 0.3, audio_data)  # Less aggressive gating
+    
+    return audio_data
+
+def get_kotoba_generate_kwargs(task="translate", target_language="en"):
+    """Get appropriate generate_kwargs for kotoba-whisper-bilingual
+    task: "transcribe" or "translate" 
+    target_language: "en" for English, "ja" for Japanese
+    """
+    return {
+        "language": target_language,  # Target language (en/ja)
+        "task": task,  # transcribe or translate
+        "temperature": 0.05,  # Lower for distilled models
+        "max_new_tokens": 224,  # Keep your existing limit
+        "no_repeat_ngram_size": 2,  # Reduced for streaming content
+        "suppress_tokens": [-1],  # Basic token suppression
+    }
+
+def get_kotoba_pipeline_kwargs():
+    """Pipeline-level configuration for kotoba-whisper"""
+    return {
+        "chunk_length_s": 15,  # From kotoba-whisper docs
+        "batch_size": 16,      # From kotoba-whisper docs
+        "return_timestamps": True,  # For confidence and timing info
+    }
+
+def optimize_for_vtuber_content(generate_kwargs):
+    """Apply VTuber-specific optimizations to generate_kwargs"""
+    # For VTuber content, we want to be more permissive of exclamations and gaming sounds
+    generate_kwargs["temperature"] = 0.1  # Slightly higher for expressive content
+    generate_kwargs["no_repeat_ngram_size"] = 1  # Allow more repetition (common in gaming)
+    return generate_kwargs
+
+def post_process_translation(text):
+    """Clean up and improve translation text"""
+    import re
+    
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    
+    # Fix common punctuation issues
+    text = re.sub(r'\s+([,.!?;:])', r'\1', text)  # Remove space before punctuation
+    text = re.sub(r'([.!?])\s*([a-z])', r'\1 \2', text)  # Ensure space after sentence endings
+    
+    # Capitalize first letter of sentences
+    text = re.sub(r'(^|[.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
+    
+    # Remove repeated punctuation
+    text = re.sub(r'([.!?]){2,}', r'\1', text)
+    
+    # Fix common transcription errors
+    text = re.sub(r'\bi\b', 'I', text)  # Fix lowercase 'i'
+    text = re.sub(r'\bim\b', "I'm", text)  # Fix "im" -> "I'm"
+    text = re.sub(r'\bdont\b', "don't", text)  # Fix "dont" -> "don't"
+    text = re.sub(r'\bcant\b', "can't", text)  # Fix "cant" -> "can't"
+    text = re.sub(r'\bwont\b', "won't", text)  # Fix "wont" -> "won't"
+    
+    # Remove trailing periods from single words
+    if len(text.split()) == 1:
+        text = text.rstrip('.')
+    
+    return text.strip()
+
 
 def processor_thread(stop_event, audio_queue):
     print("⚙️ Processor thread started.")
@@ -314,23 +453,29 @@ def processor_thread(stop_event, audio_queue):
                 print(f"⚠️ Could not load VAD model: {e}. Disabling VAD filter.")
                 config.use_vad_filter = False
 
-        model_to_load = MODEL_ID
+        model_to_load = MODEL_ID  # kotoba-tech/kotoba-whisper-bilingual-v1.0
         print(f"📥 Loading ASR model '{model_to_load}'...")
+        
+        # Updated pipeline initialization for kotoba-whisper
         pipe = pipeline(
             "automatic-speech-recognition",
-            model=model_to_load
+            model=model_to_load,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device=device,
+            model_kwargs={"attn_implementation": "sdpa"} if torch.cuda.is_available() else {},
+            **get_kotoba_pipeline_kwargs()
         )
 
-        task = config.output_mode if hasattr(config, 'output_mode') else 'translate'
-        print(f"✅ Setting model task to: '{task}' for Japanese audio.")
+        # Determine task based on config
+        task = "translate" if config.output_mode == "translate" else "transcribe"
+        target_lang = "en" if task == "translate" else config.language_code
+        print(f"✅ Setting model task to: '{task}' targeting '{target_lang}' for Japanese audio.")
 
-        generate_kwargs = {
-            "forced_decoder_ids": pipe.tokenizer.get_decoder_prompt_ids(language="en", task=task),
-            "temperature": 0.00,
-            "compression_ratio_threshold": 2.4,
-            "logprob_threshold": -1.0,
-            "no_repeat_ngram_size": 3,
-        }
+        # Get optimized generate_kwargs for kotoba-whisper
+        generate_kwargs = get_kotoba_generate_kwargs(task, target_lang)
+        
+        # Apply VTuber-specific optimizations
+        generate_kwargs = optimize_for_vtuber_content(generate_kwargs)
         print("✅ ASR Model loaded successfully.")
 
         gui_queue.put(("model_loaded", None))
@@ -338,6 +483,7 @@ def processor_thread(stop_event, audio_queue):
         translator = str.maketrans('', '', string.punctuation)
         VAD_WINDOW_SIZE = 512
         last_valid_translation = ""
+        translation_history = []  # Keep track of recent translations for context
 
         while not stop_event.is_set():
             start_time = time.time()
@@ -345,7 +491,7 @@ def processor_thread(stop_event, audio_queue):
             try:
                 audio_chunk_np = audio_queue.get(timeout=1)
 
-                audio_chunk_np = highpass_filter(audio_chunk_np.flatten(), cutoff=100, fs=SAMPLE_RATE)
+                audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
                 
               
                 if not config.use_dynamic_chunking:
@@ -375,24 +521,121 @@ def processor_thread(stop_event, audio_queue):
                     stats.add_chunk(time.time() - start_time, False, False)
                     continue
 
-                result = pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_data}, generate_kwargs=generate_kwargs)
+                # Updated pipeline call for kotoba-whisper
+                result = pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_data}, 
+                            generate_kwargs=generate_kwargs)
                 processed_text = result["text"].strip()
+                
+                # Extract confidence from chunks if available
+                confidence_score = 1.0
+                if "chunks" in result and result["chunks"]:
+                    # Kotoba-whisper with return_timestamps=True provides chunks
+                    chunk_confidences = []
+                    for chunk in result["chunks"]:
+                        # Use timestamp info as a proxy for confidence
+                        if "timestamp" in chunk and chunk["timestamp"]:
+                            # More complete chunks indicate higher confidence
+                            timestamp = chunk["timestamp"]
+                            if isinstance(timestamp, (list, tuple)) and len(timestamp) == 2:
+                                duration = timestamp[1] - timestamp[0] if timestamp[1] else 1.0
+                                # Longer, more complete chunks get higher confidence
+                                chunk_conf = min(0.9, 0.6 + (duration * 0.1))
+                                chunk_confidences.append(chunk_conf)
+                            else:
+                                chunk_confidences.append(0.8)  # Default confidence
+                        else:
+                            chunk_confidences.append(0.7)  # Lower confidence for incomplete chunks
+                    
+                    if chunk_confidences:
+                        confidence_score = sum(chunk_confidences) / len(chunk_confidences)
+                        print(f"📊 Chunk analysis: {len(chunk_confidences)} chunks, avg confidence: {confidence_score:.2f}")
+                else:
+                    # Fallback confidence based on text length and completeness
+                    word_count = len(processed_text.split())
+                    if word_count >= 3:
+                        confidence_score = 0.85
+                    elif word_count >= 1:
+                        confidence_score = 0.75
+                    else:
+                        confidence_score = 0.6
 
                 had_translation = bool(processed_text)
                 is_hallucination = False
+                quality_score = 1.0
+                
                 if had_translation:
                     lower_text = processed_text.lower()
+                    
+                    # Check for substring hallucinations
                     if any(phrase in lower_text for phrase in SUBSTRING_HALLUCINATION_FILTER):
                         is_hallucination = True
-                    else:
-                        cleaned = lower_text.translate(translator).strip()
-                        if cleaned in EXACT_MATCH_HALLUCINATION_FILTER:
-                            is_hallucination = True
+                    
+                    # Check for exact match hallucinations (but preserve important sounds)
+                    cleaned = lower_text.translate(translator).strip()
+                    if cleaned in EXACT_MATCH_HALLUCINATION_FILTER and cleaned not in PRESERVE_SOUNDS:
+                        is_hallucination = True
+                    
+                    # Quality assessment
+                    import re
+                    
+                    # Check for repetitive patterns
+                    for pattern in QUALITY_INDICATORS["repetitive_patterns"]:
+                        if re.search(pattern, processed_text, re.IGNORECASE):
+                            quality_score *= 0.3
+                    
+                    # Check for nonsense patterns
+                    for pattern in QUALITY_INDICATORS["nonsense_patterns"]:
+                        if re.search(pattern, processed_text, re.IGNORECASE):
+                            quality_score *= 0.4
+                    
+                    # Check for too many fillers
+                    for pattern in QUALITY_INDICATORS["filler_heavy"]:
+                        if re.search(pattern, processed_text, re.IGNORECASE):
+                            quality_score *= 0.5
+                    
+                    # Length-based quality check (more lenient for exclamations)
+                    word_count = len(processed_text.split())
+                    if word_count == 1:
+                        # Single words might be exclamations/screams - check if they're preserved sounds
+                        if cleaned in PRESERVE_SOUNDS or len(processed_text) <= 5:
+                            quality_score *= 0.9  # Only slight penalty for short exclamations
+                        else:
+                            quality_score *= 0.6  # Normal penalty for other single words
+                    elif word_count > 50:  # Very long translations might be hallucinations
+                        quality_score *= 0.7
+                    
+                    # Mark as hallucination if quality is too low
+                    if quality_score < 0.4:
+                        is_hallucination = True
+                        print(f"👻 Low quality filtered (score: {quality_score:.2f}): '{processed_text}'")
 
                 was_hallucination = is_hallucination
                 if had_translation and not is_hallucination:
-                    last_valid_translation = processed_text
-                    gui_queue.put(("subtitle", processed_text))
+                    # Post-process the translation for better quality
+                    cleaned_text = post_process_translation(processed_text)
+                    
+                    # Additional confidence check
+                    if confidence_score > 0.6 and quality_score > 0.4:
+                        # Check for context consistency
+                        is_contextually_valid = True
+                        if translation_history:
+                            # Simple context check - avoid exact duplicates in short time
+                            if cleaned_text in translation_history[-3:]:  # Last 3 translations
+                                is_contextually_valid = False
+                                print(f"🔄 Duplicate translation filtered: '{cleaned_text}'")
+                        
+                        if is_contextually_valid:
+                            last_valid_translation = cleaned_text
+                            translation_history.append(cleaned_text)
+                            
+                            # Keep only recent translations (last 10)
+                            if len(translation_history) > 10:
+                                translation_history.pop(0)
+                            
+                            gui_queue.put(("subtitle", cleaned_text))
+                            print(f"✅ Translation (conf: {confidence_score:.2f}, qual: {quality_score:.2f}): '{cleaned_text}'")
+                    else:
+                        print(f"⚠️ Low confidence translation filtered (conf: {confidence_score:.2f}, qual: {quality_score:.2f}): '{processed_text}'")
                 else:
                     if had_translation:
                         print(f"👻 Hallucination filtered: '{processed_text}'")

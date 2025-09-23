@@ -1,0 +1,15 @@
+advanced_build.py
+build_all_sizes.py
+build_exe.py
+BUILD_README.md
+build_minimal.py
+build_requirements.txt
+build_tiny.py
+build.bat
+build.py
+COPYING
+install_deps.py
+INSTALL_FLASH_ATTENTION.md
+install_upx.bat
+LICENSE
+LiveTranslate_minimal.spec
