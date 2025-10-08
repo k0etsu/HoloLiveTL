@@ -7,7 +7,7 @@ import torch
 from datetime import datetime
 import tkinter as tk
 from tkinter import messagebox, Toplevel, Label, colorchooser
-from transformers import pipeline
+from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
 import string
 import json
 import os
@@ -15,11 +15,22 @@ import traceback
 import sys
 import io
 from collections import deque
+import requests
+from tqdm import tqdm
+import hashlib
+import gc
+import shutil
+import warnings
 
+# Suppress warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="`torch_dtype` is deprecated")
 
+# Environment optimizations
 os.environ['TRANSFORMERS_VERBOSITY'] = 'warning'
 os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
-
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
 
 try:
     import torchaudio
@@ -28,7 +39,7 @@ except ImportError:
     exit()
 
 try:
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, snapshot_download
 except ImportError:
     hf_hub_download = None
     messagebox.showerror("Dependency Error", "huggingface_hub not found. Please run 'pip install huggingface_hub' in your terminal.")
@@ -36,21 +47,24 @@ except ImportError:
 
 from scipy.signal import butter, lfilter
 
-
+# Constants
 MODEL_ID = "kotoba-tech/kotoba-whisper-bilingual-v1.0"
 SAMPLE_RATE = 16000
 CHUNK_DURATION = 5 
 LANGUAGE_CODE = "en"
-VOLUME_THRESHOLD = 0.003  # Even lower threshold for loud sound detection
-
+VOLUME_THRESHOLD = 0.003
 USE_VAD_FILTER = True
-VAD_THRESHOLD = 0.25  # Even lower threshold for better loud sound detection
+VAD_THRESHOLD = 0.25
 DEFAULT_BG_COLOR = '#282828'
 DEFAULT_FONT_COLOR = '#FFFFFF'
 DEFAULT_BG_MODE = 'transparent'
 DEFAULT_WINDOW_OPACITY = 0.85
 
+# Model cache directory
+MODEL_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "translator_models")
+os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
 
+# Hallucination filters
 SUBSTRING_HALLUCINATION_FILTER = [
     "thank you for watching", "thanks for watching", "don't forget",
     "to subscribe", "subscribe", "bell icon", "see you next time",
@@ -59,6 +73,7 @@ SUBSTRING_HALLUCINATION_FILTER = [
     "provide more context", "i'm an ai", "i cannot", "i don't have access",
     "please provide", "more information", "context is needed"
 ]
+
 EXACT_MATCH_HALLUCINATION_FILTER = {
     "i see", "i understand", "i know", "i'm sorry", "thank you", "thanks",
     "you're welcome", "okay", "ok", "all right", "alright", "got it", "right",
@@ -68,32 +83,158 @@ EXACT_MATCH_HALLUCINATION_FILTER = {
     "oh i see", "heav-ho", "mm-hmm", "uh-huh", "yeah", "yep", "nope", "nah"
 }
 
-# Sounds that should NOT be filtered (including screams, exclamations, VTuber expressions)
 PRESERVE_SOUNDS = {
     "ah", "oh", "wow", "no", "yes", "stop", "help", "wait", "go", "come",
     "aah", "ooh", "eeh", "kyaa", "waa", "haa", "yaa", "noo", "ahh", "ohh",
-    # VTuber-specific expressions
     "nya", "uwu", "owo", "ara", "ehe", "ehehe", "hehe", "hihi", "hoho",
     "yay", "yey", "yup", "nope", "mhm", "mmm", "hmm", "huh", "eh",
-    # Gaming expressions
     "gg", "nice", "good", "bad", "fail", "win", "lose", "dead", "alive",
-    # Japanese expressions commonly used
     "hai", "iie", "sou", "nani", "mou", "demo", "kedo", "desu", "masu"
 }
 
-# Patterns that indicate low-quality transcription
 QUALITY_INDICATORS = {
-    "repetitive_patterns": [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}"],  # Repeated words/phrases
-    "nonsense_patterns": [r"[a-z]{15,}", r"\b\w{1}\s+\w{1}\s+\w{1}\b"],  # Very long words or single letters
-    "filler_heavy": [r"\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b"]  # Too many fillers
+    "repetitive_patterns": [r"(.{1,10})\1{3,}", r"(\w+\s+)\1{2,}"],
+    "nonsense_patterns": [r"[a-z]{15,}", r"\b\w{1}\s+\w{1}\s+\w{1}\b"],
+    "filler_heavy": [r"\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b.*\b(um|uh|ah|eh|mm)\b"]
 }
-
 
 gui_queue = Queue()
 config = None
 stats = None
 
+def download_with_progress(url, destination, description="Downloading"):
+    """Download file with progress bar"""
+    if os.path.exists(destination):
+        print(f"✅ {description} already exists at {destination}")
+        return destination
+    
+    print(f"📥 {description} from {url}")
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(destination, 'wb') as f, tqdm(
+            desc=description,
+            total=total_size,
+            unit='B',
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    bar.update(len(chunk))
+        
+        print(f"✅ {description} completed")
+        return destination
+    except Exception as e:
+        print(f"❌ Error downloading {description}: {e}")
+        if os.path.exists(destination):
+            os.remove(destination)
+        raise
 
+def ensure_model_downloaded():
+    """Download models if not present to avoid bundling them in the exe"""
+    model_dir = os.path.join(MODEL_CACHE_DIR, "whisper_model")
+    vad_dir = os.path.join(MODEL_CACHE_DIR, "vad_model")
+    
+    # Check if model directory exists and has required files
+    model_files_exist = False
+    if os.path.exists(model_dir):
+        required_files = ["model.safetensors", "config.json", "preprocessor_config.json"]
+        model_files_exist = all(os.path.exists(os.path.join(model_dir, f)) for f in required_files)
+    
+    # Download Whisper model if needed
+    if not model_files_exist:
+        print("📥 Downloading Whisper model...")
+        
+        # Remove existing directory if incomplete
+        if os.path.exists(model_dir):
+            try:
+                shutil.rmtree(model_dir)
+                print(f"🗑️ Removed incomplete model directory: {model_dir}")
+            except Exception as e:
+                print(f"⚠️ Could not remove existing model directory: {e}")
+        
+        try:
+            # Try using snapshot_download for a complete model download
+            print("📥 Using Hugging Face snapshot download...")
+            model_dir = snapshot_download(
+                repo_id=MODEL_ID,
+                cache_dir=MODEL_CACHE_DIR,
+                local_dir=model_dir,
+                resume_download=True
+            )
+            print(f"✅ Model downloaded to: {model_dir}")
+        except Exception as e:
+            print(f"⚠️ Snapshot download failed: {e}")
+            print("📥 Falling back to manual download...")
+            
+            # Fallback to manual download
+            os.makedirs(model_dir, exist_ok=True)
+            
+            # Download essential files
+            base_url = f"https://huggingface.co/{MODEL_ID}/resolve/main"
+            
+            files_to_download = [
+                ("model.safetensors", "model.safetensors"),
+                ("config.json", "config.json"),
+                ("preprocessor_config.json", "preprocessor_config.json"),
+                ("tokenizer.json", "tokenizer.json"),
+                ("tokenizer_config.json", "tokenizer_config.json"),
+                ("generation_config.json", "generation_config.json"),
+                ("special_tokens_map.json", "special_tokens_map.json"),
+                ("vocab.json", "vocab.json")
+            ]
+            
+            for filename, local_name in files_to_download:
+                url = f"{base_url}/{filename}"
+                destination = os.path.join(model_dir, local_name)
+                download_with_progress(url, destination, f"Downloading {filename}")
+    
+    # Download VAD model
+    vad_path = os.path.join(vad_dir, "silero_vad.jit")
+    if not os.path.exists(vad_path):
+        print("📥 Downloading VAD model...")
+        os.makedirs(vad_dir, exist_ok=True)
+        
+        # Try multiple URLs for the VAD model
+        vad_urls = [
+            "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.jit",
+            "https://github.com/snakers4/silero-vad/raw/main/src/silero_vad/data/silero_vad.jit",
+            "https://models.silero.ai/models/vad/silero_vad.jit",
+            "https://github.com/snakers4/silero-vad/releases/download/v3.1/silero_vad.jit"
+        ]
+        
+        vad_downloaded = False
+        for vad_url in vad_urls:
+            try:
+                print(f"📥 Trying VAD model URL: {vad_url}")
+                download_with_progress(vad_url, vad_path, "Downloading VAD model")
+                vad_downloaded = True
+                break
+            except Exception as e:
+                print(f"⚠️ Failed to download from {vad_url}: {e}")
+                if os.path.exists(vad_path):
+                    os.remove(vad_path)
+                continue
+        
+        if not vad_downloaded:
+            print("⚠️ Could not download VAD model from any source. VAD filtering will be disabled.")
+            # Create a dummy file to prevent repeated download attempts
+            with open(vad_path + ".failed", "w") as f:
+                f.write("VAD model download failed")
+    
+    return model_dir, vad_dir
+
+def get_file_hash(filepath):
+    """Get SHA256 hash of a file"""
+    hash_sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_sha256.update(chunk)
+    return hash_sha256.hexdigest()
 
 class Config:
     def __init__(self):
@@ -119,9 +260,10 @@ class Config:
             "output_mode": "translate",
             "selected_audio_device": None,
             "use_dynamic_chunking": True,
-            "dynamic_max_chunk_duration": 15.0,  # Longer chunks for better context
-            "dynamic_silence_timeout": 1.2,      # More patience for natural pauses
-            "dynamic_min_speech_duration": 0.3   # Allow shorter sounds including screams
+            "dynamic_max_chunk_duration": 15.0,
+            "dynamic_silence_timeout": 1.2,
+            "dynamic_min_speech_duration": 0.3,
+            "model_cache_dir": MODEL_CACHE_DIR
         }
         if os.path.exists(self.config_file):
             try:
@@ -139,8 +281,6 @@ class Config:
                 json.dump(config_data, f, indent=4)
         except Exception as e:
             print(f"Error saving config: {e}")
-
-
 
 class TranslatorStats:
     def __init__(self):
@@ -161,7 +301,6 @@ class TranslatorStats:
                 self.hallucinations_filtered += 1
             else:
                 self.translations_made += 1
-
 
 def find_audio_device(selected_device_name=None):
     print("🔍 Searching for audio capture devices...")
@@ -191,8 +330,6 @@ def find_audio_device(selected_device_name=None):
         print(f"⚠️ No default loopback found. Falling back to first available device: '{all_mics[0].name}'")
         return all_mics[0]
 
-
-
 def recorder_thread(stop_event, audio_queue, selected_device_name=None):
     if config.use_dynamic_chunking:
         print("🎙️ Recorder thread started (Dynamic Chunking Mode).")
@@ -200,7 +337,6 @@ def recorder_thread(stop_event, audio_queue, selected_device_name=None):
     else:
         print("🎙️ Recorder thread started (Fixed Chunk Mode).")
         fixed_recorder_thread(stop_event, audio_queue, selected_device_name)
-
 
 def fixed_recorder_thread(stop_event, audio_queue, selected_device_name):
     try:
@@ -219,28 +355,40 @@ def fixed_recorder_thread(stop_event, audio_queue, selected_device_name):
     finally:
         print("🎙️ Recorder thread stopped (Fixed).")
 
-
 def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
-   
     try:
         target_mic = find_audio_device(selected_device_name)
         if target_mic is None:
             raise RuntimeError("No audio devices found. Cannot start recording.")
             
-       
         print("🎙️ [Dynamic] Loading Silero VAD model for recorder...")
         torch.set_num_threads(1)
-        vad_model, _ = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad', model='silero_vad',
-            force_reload=False, trust_repo=True
-        )
-        print("🎙️ [Dynamic] VAD model loaded.")
+        
+        # Load VAD from cache
+        vad_path = os.path.join(config.model_cache_dir, "vad_model", "silero_vad.jit")
+        vad_failed_path = vad_path + ".failed"
+        
+        if not os.path.exists(vad_path) and not os.path.exists(vad_failed_path):
+            print("🎙️ [Dynamic] VAD model not found, downloading...")
+            ensure_model_downloaded()
+        
+        if os.path.exists(vad_failed_path):
+            print("⚠️ [Dynamic] VAD model download previously failed. Using volume-based detection only.")
+            vad_model = None
+        elif not os.path.exists(vad_path):
+            print("⚠️ [Dynamic] VAD model file not found. Using volume-based detection only.")
+            vad_model = None
+        else:
+            try:
+                vad_model = torch.jit.load(vad_path, map_location='cpu')
+                print("🎙️ [Dynamic] VAD model loaded.")
+            except Exception as e:
+                print(f"⚠️ [Dynamic] Failed to load VAD model: {e}. Using volume-based detection only.")
+                vad_model = None
 
-    
         VAD_FRAME_DURATION_MS = 30
         VAD_FRAME_SIZE = int(SAMPLE_RATE * VAD_FRAME_DURATION_MS / 1000)
 
-     
         is_speaking = False
         speech_buffer = []
         silence_frames_after_speech = 0
@@ -251,33 +399,34 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
         with target_mic.recorder(samplerate=SAMPLE_RATE, channels=1) as mic:
             print("🎙️ [Dynamic] Now listening...")
             while not stop_event.is_set():
-               
                 frame_data = mic.record(numframes=VAD_FRAME_SIZE)
                 
-              
                 rms = np.sqrt(np.mean(frame_data ** 2))
-                
-                # Enhanced detection for loud sounds
                 peak_level = np.max(np.abs(frame_data))
-                is_loud_sound = peak_level > 0.1  # Detect sudden loud sounds
+                is_loud_sound = peak_level > 0.1
                 
                 if rms < config.volume_threshold and not is_loud_sound:
                     is_speech = False
                 else:
-                    # Use VAD model for speech detection
-                    audio_tensor = torch.from_numpy(frame_data.flatten()).float()
-                    if len(audio_tensor) < 512:
-                        audio_tensor = torch.nn.functional.pad(audio_tensor, (0, 512 - len(audio_tensor)))
-                    speech_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
-                    
-                    # Lower threshold for loud sounds, normal threshold for regular speech
-                    vad_threshold = config.vad_threshold * 0.5 if is_loud_sound else config.vad_threshold
-                    is_speech = speech_prob > vad_threshold or is_loud_sound
-                    
-                    if is_loud_sound:
-                        print(f"🔊 Loud sound detected! Peak: {peak_level:.3f}, RMS: {rms:.3f}, VAD: {speech_prob:.3f}")
+                    if vad_model is not None:
+                        # Use VAD model if available
+                        audio_tensor = torch.from_numpy(frame_data.flatten()).float()
+                        if len(audio_tensor) < 512:
+                            audio_tensor = torch.nn.functional.pad(audio_tensor, (0, 512 - len(audio_tensor)))
+                        speech_prob = vad_model(audio_tensor, SAMPLE_RATE).item()
+                        
+                        vad_threshold = config.vad_threshold * 0.5 if is_loud_sound else config.vad_threshold
+                        is_speech = speech_prob > vad_threshold or is_loud_sound
+                        
+                        if is_loud_sound:
+                            print(f"🔊 Loud sound detected! Peak: {peak_level:.3f}, RMS: {rms:.3f}, VAD: {speech_prob:.3f}")
+                    else:
+                        # Fallback to volume-based detection only
+                        is_speech = rms > config.volume_threshold or is_loud_sound
+                        
+                        if is_loud_sound:
+                            print(f"🔊 Loud sound detected! Peak: {peak_level:.3f}, RMS: {rms:.3f} (VAD disabled)")
 
-             
                 if is_speaking:
                     speech_buffer.append(frame_data)
                     if is_speech:
@@ -285,21 +434,15 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
                     else:
                         silence_frames_after_speech += 1
                     
-                    
                     chunk_ended = (silence_frames_after_speech > silence_timeout_frames) or \
                                   (len(speech_buffer) > max_chunk_frames)
 
                     if chunk_ended:
-                  
                         audio_chunk = np.concatenate(speech_buffer)
                         chunk_duration_s = len(audio_chunk) / SAMPLE_RATE
-                        
-                
-                        # Check if this chunk contains loud sounds
                         chunk_peak = np.max(np.abs(audio_chunk))
                         is_loud_chunk = chunk_peak > 0.1
                         
-                        # More lenient requirements for loud chunks
                         min_duration = config.dynamic_min_speech_duration * 0.5 if is_loud_chunk else config.dynamic_min_speech_duration
                         min_samples = int(SAMPLE_RATE * 0.5) if is_loud_chunk else int(SAMPLE_RATE * 1.0)
                         
@@ -310,13 +453,11 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
                         else:
                             print(f"⏩ Skipped short chunk: {chunk_duration_s:.2f}s (peak: {chunk_peak:.3f})")
                         
-                     
                         is_speaking = False
                         speech_buffer = []
                         silence_frames_after_speech = 0
 
                 elif is_speech:
-                 
                     is_speaking = True
                     speech_buffer.append(frame_data)
                     silence_frames_after_speech = 0
@@ -328,7 +469,6 @@ def dynamic_recorder_thread(stop_event, audio_queue, selected_device_name):
     finally:
         print("🎙️ Recorder thread stopped (Dynamic).")
 
-
 def highpass_filter(data, cutoff=100, fs=16000, order=5):
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
@@ -338,17 +478,13 @@ def highpass_filter(data, cutoff=100, fs=16000, order=5):
 
 def normalize_audio(audio_data):
     """Normalize audio to improve recognition accuracy while preserving loud sounds"""
-    # Remove DC offset
     audio_data = audio_data - np.mean(audio_data)
     
-    # Use RMS-based normalization instead of peak normalization for better loud sound handling
     rms = np.sqrt(np.mean(audio_data ** 2))
     if rms > 0:
-        # Target RMS level (preserve dynamics for loud sounds)
         target_rms = 0.3
         audio_data = audio_data * (target_rms / rms)
     
-    # Gentle soft limiting only for extreme peaks
     audio_data = np.where(np.abs(audio_data) > 0.95, 
                          np.sign(audio_data) * (0.95 + 0.05 * np.tanh((np.abs(audio_data) - 0.95) * 10)), 
                          audio_data)
@@ -357,78 +493,59 @@ def normalize_audio(audio_data):
 
 def enhance_audio_quality(audio_data, sample_rate=16000):
     """Apply audio enhancements for better speech recognition including loud sounds"""
-    # Apply high-pass filter to remove low-frequency noise (less aggressive)
     audio_data = highpass_filter(audio_data, cutoff=60, fs=sample_rate, order=3)
-    
-    # Normalize audio (preserves loud sound dynamics)
     audio_data = normalize_audio(audio_data)
     
-    # Very gentle noise gate that doesn't affect loud sounds
-    threshold = 0.005  # Lower threshold to catch more sounds
+    threshold = 0.005
     audio_data = np.where(np.abs(audio_data) < threshold, 
-                         audio_data * 0.3, audio_data)  # Less aggressive gating
+                         audio_data * 0.3, audio_data)
     
     return audio_data
 
 def get_kotoba_generate_kwargs(task="translate", target_language="en"):
-    """Get appropriate generate_kwargs for kotoba-whisper-bilingual
-    task: "transcribe" or "translate" 
-    target_language: "en" for English, "ja" for Japanese
-    """
+    """Get appropriate generate_kwargs for kotoba-whisper-bilingual"""
     return {
-        "language": target_language,  # Target language (en/ja)
-        "task": task,  # transcribe or translate
-        "temperature": 0.05,  # Lower for distilled models
-        "max_new_tokens": 224,  # Keep your existing limit
-        "no_repeat_ngram_size": 2,  # Reduced for streaming content
-        "suppress_tokens": [-1],  # Basic token suppression
+        "language": target_language,
+        "task": task,
+        "temperature": 0.05,
+        "max_new_tokens": 224,
+        "no_repeat_ngram_size": 2,
+        "suppress_tokens": [-1],
     }
 
 def get_kotoba_pipeline_kwargs():
     """Pipeline-level configuration for kotoba-whisper"""
     return {
-        "chunk_length_s": 15,  # From kotoba-whisper docs
-        "batch_size": 16,      # From kotoba-whisper docs
-        "return_timestamps": True,  # For confidence and timing info
+        "chunk_length_s": 15,
+        "batch_size": 16,
+        "return_timestamps": True,
     }
 
 def optimize_for_vtuber_content(generate_kwargs):
     """Apply VTuber-specific optimizations to generate_kwargs"""
-    # For VTuber content, we want to be more permissive of exclamations and gaming sounds
-    generate_kwargs["temperature"] = 0.1  # Slightly higher for expressive content
-    generate_kwargs["no_repeat_ngram_size"] = 1  # Allow more repetition (common in gaming)
+    generate_kwargs["temperature"] = 0.1
+    generate_kwargs["no_repeat_ngram_size"] = 1
     return generate_kwargs
 
 def post_process_translation(text):
     """Clean up and improve translation text"""
     import re
     
-    # Remove extra whitespace
     text = ' '.join(text.split())
-    
-    # Fix common punctuation issues
-    text = re.sub(r'\s+([,.!?;:])', r'\1', text)  # Remove space before punctuation
-    text = re.sub(r'([.!?])\s*([a-z])', r'\1 \2', text)  # Ensure space after sentence endings
-    
-    # Capitalize first letter of sentences
+    text = re.sub(r'\s+([,.!?;:])', r'\1', text)
+    text = re.sub(r'([.!?])\s*([a-z])', r'\1 \2', text)
     text = re.sub(r'(^|[.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
-    
-    # Remove repeated punctuation
     text = re.sub(r'([.!?]){2,}', r'\1', text)
+    text = re.sub(r'\bi\b', 'I', text)
+    text = re.sub(r'\bim\b', "I'm", text)
+    text = re.sub(r'\bdont\b', "don't", text)
+    text = re.sub(r'\bcant\b', "can't", text)
+    text = re.sub(r'\bwont\b', "won't", text)
     
-    # Fix common transcription errors
-    text = re.sub(r'\bi\b', 'I', text)  # Fix lowercase 'i'
-    text = re.sub(r'\bim\b', "I'm", text)  # Fix "im" -> "I'm"
-    text = re.sub(r'\bdont\b', "don't", text)  # Fix "dont" -> "don't"
-    text = re.sub(r'\bcant\b', "can't", text)  # Fix "cant" -> "can't"
-    text = re.sub(r'\bwont\b', "won't", text)  # Fix "wont" -> "won't"
-    
-    # Remove trailing periods from single words
     if len(text.split()) == 1:
         text = text.rstrip('.')
     
     return text.strip()
-
 
 def processor_thread(stop_event, audio_queue):
     print("⚙️ Processor thread started.")
@@ -436,54 +553,80 @@ def processor_thread(stop_event, audio_queue):
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
         print(f"🔧 Using device: {device.upper()}")
 
+        # Ensure models are downloaded
+        model_dir, vad_dir = ensure_model_downloaded()
+        
         vad_model = None
         
         if not config.use_dynamic_chunking and config.use_vad_filter:
             try:
                 print("📥 Loading Silero VAD model...")
                 torch.set_num_threads(1)
-                vad_model, _ = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
-                    force_reload=False,
-                    trust_repo=True
-                )
+                vad_path = os.path.join(vad_dir, "silero_vad.jit")
+                vad_model = torch.jit.load(vad_path, map_location='cpu')
                 print("✅ VAD model loaded successfully.")
             except Exception as e:
                 print(f"⚠️ Could not load VAD model: {e}. Disabling VAD filter.")
                 config.use_vad_filter = False
 
-        model_to_load = MODEL_ID  # kotoba-tech/kotoba-whisper-bilingual-v1.0
-        print(f"📥 Loading ASR model '{model_to_load}'...")
+        print(f"📥 Loading ASR model from cache...")
         
-        # Updated pipeline initialization for kotoba-whisper
-        pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model_to_load,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device=device,
-            model_kwargs={"attn_implementation": "sdpa"} if torch.cuda.is_available() else {},
-            **get_kotoba_pipeline_kwargs()
-        )
+        # Determine the appropriate dtype
+        model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        
+        # Try to load the model directly first
+        try:
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                model_dir,
+                dtype=model_dtype,
+                low_cpu_mem_usage=True,
+                use_safetensors=True
+            )
+            processor = AutoProcessor.from_pretrained(model_dir)
+            
+            # Create pipeline with loaded model and processor
+            pipe = pipeline(
+                "automatic-speech-recognition",
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                dtype=model_dtype,
+                device=device,
+                **get_kotoba_pipeline_kwargs()
+            )
+            print("✅ Model loaded successfully from cache.")
+        except Exception as e:
+            print(f"⚠️ Failed to load model from cache: {e}")
+            print("📥 Attempting to download model directly from Hugging Face...")
+            
+            # Fallback to downloading directly from Hugging Face
+            try:
+                pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=MODEL_ID,
+                    dtype=model_dtype,
+                    device=device,
+                    model_kwargs={"attn_implementation": "sdpa"} if torch.cuda.is_available() else {},
+                    **get_kotoba_pipeline_kwargs()
+                )
+                print("✅ Model loaded successfully from Hugging Face.")
+            except Exception as e2:
+                print(f"🔴 Failed to load model from Hugging Face: {e2}")
+                raise Exception(f"Could not load model: {e}, {e2}")
 
-        # Determine task based on config
         task = "translate" if config.output_mode == "translate" else "transcribe"
         target_lang = "en" if task == "translate" else config.language_code
         print(f"✅ Setting model task to: '{task}' targeting '{target_lang}' for Japanese audio.")
 
-        # Get optimized generate_kwargs for kotoba-whisper
         generate_kwargs = get_kotoba_generate_kwargs(task, target_lang)
-        
-        # Apply VTuber-specific optimizations
         generate_kwargs = optimize_for_vtuber_content(generate_kwargs)
         print("✅ ASR Model loaded successfully.")
 
         gui_queue.put(("model_loaded", None))
 
         translator = str.maketrans('', '', string.punctuation)
-        VAD_WINDOW_SIZE = 512
         last_valid_translation = ""
-        translation_history = []  # Keep track of recent translations for context
+        translation_history = []
 
         while not stop_event.is_set():
             start_time = time.time()
@@ -493,11 +636,9 @@ def processor_thread(stop_event, audio_queue):
 
                 audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
                 
-              
                 if not config.use_dynamic_chunking:
                     rms = np.sqrt(np.mean(audio_chunk_np ** 2))
                     if rms < config.volume_threshold:
-                        
                         stats.add_chunk(time.time() - start_time, False, False)
                         continue
 
@@ -509,48 +650,39 @@ def processor_thread(stop_event, audio_queue):
 
                         speech_windows = [prob > config.vad_threshold for prob in [speech_prob]]
                         if sum(speech_windows) < 3:
-                        
                             stats.add_chunk(time.time() - start_time, False, False)
                             continue
 
                 audio_data = audio_chunk_np.flatten().astype(np.float32)
-                min_samples = int(SAMPLE_RATE * 1.0)  
+                min_samples = int(SAMPLE_RATE * 1.0)
                 if len(audio_data) < min_samples:
                     print(f"⏩ Skipped chunk: too short ({len(audio_data)/SAMPLE_RATE:.2f}s)")
-                   
                     stats.add_chunk(time.time() - start_time, False, False)
                     continue
 
-                # Updated pipeline call for kotoba-whisper
                 result = pipe({"sampling_rate": SAMPLE_RATE, "raw": audio_data}, 
                             generate_kwargs=generate_kwargs)
                 processed_text = result["text"].strip()
                 
-                # Extract confidence from chunks if available
                 confidence_score = 1.0
                 if "chunks" in result and result["chunks"]:
-                    # Kotoba-whisper with return_timestamps=True provides chunks
                     chunk_confidences = []
                     for chunk in result["chunks"]:
-                        # Use timestamp info as a proxy for confidence
                         if "timestamp" in chunk and chunk["timestamp"]:
-                            # More complete chunks indicate higher confidence
                             timestamp = chunk["timestamp"]
                             if isinstance(timestamp, (list, tuple)) and len(timestamp) == 2:
                                 duration = timestamp[1] - timestamp[0] if timestamp[1] else 1.0
-                                # Longer, more complete chunks get higher confidence
                                 chunk_conf = min(0.9, 0.6 + (duration * 0.1))
                                 chunk_confidences.append(chunk_conf)
                             else:
-                                chunk_confidences.append(0.8)  # Default confidence
+                                chunk_confidences.append(0.8)
                         else:
-                            chunk_confidences.append(0.7)  # Lower confidence for incomplete chunks
+                            chunk_confidences.append(0.7)
                     
                     if chunk_confidences:
                         confidence_score = sum(chunk_confidences) / len(chunk_confidences)
                         print(f"📊 Chunk analysis: {len(chunk_confidences)} chunks, avg confidence: {confidence_score:.2f}")
                 else:
-                    # Fallback confidence based on text length and completeness
                     word_count = len(processed_text.split())
                     if word_count >= 3:
                         confidence_score = 0.85
@@ -566,61 +698,48 @@ def processor_thread(stop_event, audio_queue):
                 if had_translation:
                     lower_text = processed_text.lower()
                     
-                    # Check for substring hallucinations
                     if any(phrase in lower_text for phrase in SUBSTRING_HALLUCINATION_FILTER):
                         is_hallucination = True
                     
-                    # Check for exact match hallucinations (but preserve important sounds)
                     cleaned = lower_text.translate(translator).strip()
                     if cleaned in EXACT_MATCH_HALLUCINATION_FILTER and cleaned not in PRESERVE_SOUNDS:
                         is_hallucination = True
                     
-                    # Quality assessment
                     import re
                     
-                    # Check for repetitive patterns
                     for pattern in QUALITY_INDICATORS["repetitive_patterns"]:
                         if re.search(pattern, processed_text, re.IGNORECASE):
                             quality_score *= 0.3
                     
-                    # Check for nonsense patterns
                     for pattern in QUALITY_INDICATORS["nonsense_patterns"]:
                         if re.search(pattern, processed_text, re.IGNORECASE):
                             quality_score *= 0.4
                     
-                    # Check for too many fillers
                     for pattern in QUALITY_INDICATORS["filler_heavy"]:
                         if re.search(pattern, processed_text, re.IGNORECASE):
                             quality_score *= 0.5
                     
-                    # Length-based quality check (more lenient for exclamations)
                     word_count = len(processed_text.split())
                     if word_count == 1:
-                        # Single words might be exclamations/screams - check if they're preserved sounds
                         if cleaned in PRESERVE_SOUNDS or len(processed_text) <= 5:
-                            quality_score *= 0.9  # Only slight penalty for short exclamations
+                            quality_score *= 0.9
                         else:
-                            quality_score *= 0.6  # Normal penalty for other single words
-                    elif word_count > 50:  # Very long translations might be hallucinations
+                            quality_score *= 0.6
+                    elif word_count > 50:
                         quality_score *= 0.7
                     
-                    # Mark as hallucination if quality is too low
                     if quality_score < 0.4:
                         is_hallucination = True
                         print(f"👻 Low quality filtered (score: {quality_score:.2f}): '{processed_text}'")
 
                 was_hallucination = is_hallucination
                 if had_translation and not is_hallucination:
-                    # Post-process the translation for better quality
                     cleaned_text = post_process_translation(processed_text)
                     
-                    # Additional confidence check
                     if confidence_score > 0.6 and quality_score > 0.4:
-                        # Check for context consistency
                         is_contextually_valid = True
                         if translation_history:
-                            # Simple context check - avoid exact duplicates in short time
-                            if cleaned_text in translation_history[-3:]:  # Last 3 translations
+                            if cleaned_text in translation_history[-3:]:
                                 is_contextually_valid = False
                                 print(f"🔄 Duplicate translation filtered: '{cleaned_text}'")
                         
@@ -628,7 +747,6 @@ def processor_thread(stop_event, audio_queue):
                             last_valid_translation = cleaned_text
                             translation_history.append(cleaned_text)
                             
-                            # Keep only recent translations (last 10)
                             if len(translation_history) > 10:
                                 translation_history.pop(0)
                             
@@ -639,7 +757,7 @@ def processor_thread(stop_event, audio_queue):
                 else:
                     if had_translation:
                         print(f"👻 Hallucination filtered: '{processed_text}'")
-                  
+                    
                     if last_valid_translation:
                         gui_queue.put(("subtitle", last_valid_translation))
             except Empty:
@@ -647,21 +765,26 @@ def processor_thread(stop_event, audio_queue):
             finally:
                 if 'start_time' in locals():
                     stats.add_chunk(time.time() - start_time, had_translation, was_hallucination)
+                    
+                # Clear GPU memory periodically
+                if torch.cuda.is_available() and stats.chunks_processed % 10 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
     except Exception as e:
         traceback.print_exc()
         print(f"🔴 Processor Thread Error: {e}")
         gui_queue.put(("error", "Model/Processing error! Check console."))
     finally:
-        if torch.cuda.is_available(): torch.cuda.empty_cache()
+        if torch.cuda.is_available(): 
+            torch.cuda.empty_cache()
         print("⚙️ Processor thread stopped.")
-
-
 
 class ControlGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Live Translator Control")
-        self.root.geometry("450x850") 
+        self.root.geometry("450x850")
         self.root.resizable(False, False)
         self.stop_event = None
         self.worker_threads = []
@@ -677,7 +800,6 @@ class ControlGUI:
         self.log_window = None
         self.log_text_widget = None
 
-   
         self.log_queue = Queue()
         self.log_buffer = deque(maxlen=1000)
         self.log_file = None
@@ -717,7 +839,7 @@ class ControlGUI:
         self.root.after(100, self._process_log_queue)
 
     def _process_log_queue(self):
-        messages_to_process = 100 
+        messages_to_process = 100
         batch = []
         for _ in range(messages_to_process):
             try:
@@ -771,7 +893,6 @@ class ControlGUI:
         settings_container = tk.Frame(self.root)
         settings_container.pack(pady=5, padx=20, fill='x', expand=True)
 
-        # --- Dynamic Chunking Settings ---
         dynamic_frame = tk.LabelFrame(settings_container, text="Dynamic Chunking Settings", padx=10, pady=10)
         dynamic_frame.pack(pady=5, fill="x")
         self.dynamic_chunk_var = tk.BooleanVar(value=config.use_dynamic_chunking)
@@ -837,12 +958,10 @@ class ControlGUI:
         self.font_color_display = tk.Label(appearance_frame, text='  ', bg=config.subtitle_font_color, relief="solid", borderwidth=1)
         self.font_color_display.grid(row=3, column=2, padx=5, sticky="w")
         
-        # Add text shadow option (fix AttributeError)
         self.text_shadow_var = tk.BooleanVar(value=getattr(config, 'text_shadow', True))
         self.text_shadow_check = tk.Checkbutton(appearance_frame, text="Text Shadow", variable=self.text_shadow_var, command=self.on_text_shadow_change)
         self.text_shadow_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
         
-        # Presets Frame (moved down)
         presets_frame = tk.LabelFrame(settings_container, text="Presets", padx=10, pady=10)
         presets_frame.pack(pady=5, fill="x")
 
@@ -878,11 +997,9 @@ class ControlGUI:
             for name in device_names:
                 menu.add_command(label=name, command=lambda v=name: self.device_var.set(v))
             
-         
             if config.selected_audio_device and config.selected_audio_device in device_names:
                 self.device_var.set(config.selected_audio_device)
             else:
-      
                 preferred_device = find_audio_device()
                 if preferred_device:
                     self.device_var.set(preferred_device.name)
@@ -890,7 +1007,6 @@ class ControlGUI:
                     self.device_var.set(device_names[0])
                 else: 
                      self.device_var.set("No devices found")
-
 
     def get_selected_device_name(self):
         selected_name = self.device_var.get()
@@ -966,7 +1082,6 @@ class ControlGUI:
             if text.strip() and "FATAL ERROR" not in text:
                 self.subtitle_history.append(f"[{datetime.now():%H:%M:%S}] {text}")
             
-           
             self._update_background_size()
             self._resize_window_if_needed()
 
@@ -975,11 +1090,9 @@ class ControlGUI:
         try:
             self.subtitle_window.update_idletasks()
             
-           
             label_width = self.subtitle_label.winfo_reqwidth()
             label_height = self.subtitle_label.winfo_reqheight()
             
-        
             min_width = 200
             min_height = 60
             label_width = max(label_width, min_width)
@@ -988,37 +1101,29 @@ class ControlGUI:
             canvas_width = self.background_canvas.winfo_width()
             canvas_height = self.background_canvas.winfo_height()
             
-     
             padding_x = max(30, min(50, label_width * 0.1))
             padding_y = max(20, min(30, label_height * 0.15))
             
-          
             x0 = (canvas_width - label_width) / 2 - padding_x
             y0 = (canvas_height - label_height) / 2 - padding_y
             x1 = (canvas_width + label_width) / 2 + padding_x
             y1 = (canvas_height + label_height) / 2 + padding_y
             
-           
             x0 = max(0, x0)
             y0 = max(0, y0)
             x1 = min(canvas_width, x1)
             y1 = min(canvas_height, y1)
             
-           
             self.background_canvas.coords(self.background_rect, x0, y0, x1, y1)
             
-      
             self.subtitle_label.place(relx=0.5, rely=0.5, anchor="center")
             
-        
             if config.text_shadow and self.subtitle_shadow_label.winfo_exists():
-            
                 shadow_offset = 2
                 self.subtitle_shadow_label.place(
                     x=self.subtitle_label.winfo_x() + shadow_offset, 
                     y=self.subtitle_label.winfo_y() + shadow_offset
                 )
-              
                 self.background_canvas.tag_lower(self.background_rect)
                 self.subtitle_shadow_label.lift()
                 self.subtitle_label.lift()
@@ -1030,47 +1135,37 @@ class ControlGUI:
             pass
 
     def _resize_window_if_needed(self):
-        """Dynamically resize the subtitle window based on content size"""
         if not self.subtitle_window or not self.subtitle_label.winfo_exists(): return
         
         try:
-        
             label_width = self.subtitle_label.winfo_reqwidth()
             label_height = self.subtitle_label.winfo_reqheight()
             
-         
-            padding_x = 80  
-            padding_y = 80  
+            padding_x = 80
+            padding_y = 80
             
             required_width = max(1000, label_width + padding_x)
             required_height = max(300, label_height + padding_y)
             
-         
             current_width = self.subtitle_window.winfo_width()
             current_height = self.subtitle_window.winfo_height()
             
-         
             width_diff = abs(required_width - current_width)
             height_diff = abs(required_height - current_height)
             
             if width_diff > 50 or height_diff > 50:
-                
                 x = self.subtitle_window.winfo_x()
                 y = self.subtitle_window.winfo_y()
                 
-              
                 self.subtitle_window.geometry(f"{required_width}x{required_height}+{x}+{y}")
                 
-               
                 self.background_canvas.configure(width=required_width-80, height=required_height-80)
                 
-               
                 new_wraplength = max(400, required_width - 100)
                 self.subtitle_label.configure(wraplength=new_wraplength)
                 if self.subtitle_shadow_label:
                     self.subtitle_shadow_label.configure(wraplength=new_wraplength)
                 
-             
                 self.subtitle_window.update_idletasks()
                 self._update_background_size()
                 
@@ -1156,34 +1251,23 @@ class ControlGUI:
             self.font_color_display.config(bg=color[1])
             self.update_subtitle_style()
 
-    def pick_border_color(self): 
-        color = colorchooser.askcolor(title="Pick Border Color", initialcolor=config.border_color)
-        if color and color[1]:
-            config.border_color = color[1]
-         
-            self.update_subtitle_style()
-
     def apply_and_save_settings(self, save_to_disk=True):
         try:
-           
             config.volume_threshold = max(0.0, float(self.volume_var.get()))
             config.use_vad_filter = self.vad_var.get()
             config.vad_threshold = max(0.0, min(1.0, float(self.vad_threshold_var.get()) / 100.0))
             
-          
             config.use_dynamic_chunking = self.dynamic_chunk_var.get()
             config.dynamic_silence_timeout = max(0.1, float(self.dyn_silence_var.get()))
             config.dynamic_max_chunk_duration = max(1.0, float(self.dyn_max_dur_var.get()))
             config.dynamic_min_speech_duration = max(0.1, float(self.dyn_min_speech_var.get()))
 
-          
             config.font_size = int(self.font_var.get())
             config.window_opacity = max(0.0, min(1.0, float(self.opacity_var.get()) / 100.0))
             config.font_weight = self.font_weight_var.get()
             config.text_shadow = self.text_shadow_var.get()
             config.subtitle_bg_mode = self.bg_mode_var.get()
             
-           
             config.selected_audio_device = self.device_var.get()
             if save_to_disk:
                 config.save_config()
@@ -1233,11 +1317,6 @@ class ControlGUI:
         config.text_shadow = self.text_shadow_var.get()
         self.update_subtitle_style()
 
-    def on_border_change(self, event=None): 
-        try: config.border_width = max(0, int(self.border_width_var.get()))
-        except (ValueError, tk.TclError): pass
-        self.update_subtitle_style()
-
     def set_bg_mode(self, value=None):
         config.subtitle_bg_mode = self.bg_mode_var.get()
         self.update_subtitle_style()
@@ -1272,11 +1351,8 @@ class ControlGUI:
         
         def do_download():
             try:
-                print(f"Starting download for model: {MODEL_ID}")
-                _ = pipeline("automatic-speech-recognition", model=MODEL_ID)
-             
-                print("Starting download for VAD model...")
-                torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=False, trust_repo=True)
+                print(f"Starting model download...")
+                ensure_model_downloaded()
                 print("Model downloads/verifications complete.")
                 gui_queue.put(("status_update", ("Status: All models are ready!", "green")))
             except Exception as e:
@@ -1316,7 +1392,7 @@ class ControlGUI:
 
         presets = [f.replace(".json", "") for f in os.listdir(preset_dir) if f.endswith(".json")]
         menu = self.preset_menu['menu']
-        menu.delete(0, 'end')
+        menu.delete(0, "end")
 
         if not presets:
             menu.add_command(label="No presets found", state="disabled")
@@ -1352,7 +1428,6 @@ class ControlGUI:
             "border_width": config.border_width,
             "border_color": config.border_color,
             "output_mode": config.output_mode,
-         
             "use_dynamic_chunking": config.use_dynamic_chunking,
             "dynamic_max_chunk_duration": config.dynamic_max_chunk_duration,
             "dynamic_silence_timeout": config.dynamic_silence_timeout,
@@ -1391,7 +1466,6 @@ class ControlGUI:
             for key, value in preset_data.items():
                 setattr(config, key, value)
 
-         
             self.volume_var.set(str(config.volume_threshold))
             self.opacity_var.set(str(int(config.window_opacity * 100)))
             self.font_var.set(str(config.font_size))
@@ -1403,7 +1477,6 @@ class ControlGUI:
             self.font_color_display.config(bg=config.subtitle_font_color)
             self.text_shadow_var.set(config.text_shadow)
             
-            # Update new dynamic chunking UI
             if 'use_dynamic_chunking' in preset_data:
                 self.dynamic_chunk_var.set(config.use_dynamic_chunking)
                 self.dyn_silence_var.set(str(config.dynamic_silence_timeout))
