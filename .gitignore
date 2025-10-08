@@ -210,20 +210,4 @@ Thumbs.db
 *.backup
 *copy.py
 
-# Failed download markers
-*.failed
-venv_gpu_build/share/man/man1/isympy.1
-venv_gpu_build/pyvenv.cfg
-venv_gpu_build/Scripts/activate
-venv_gpu_build/Scripts/activate.bat
-venv_gpu_build/Scripts/Activate.ps1
-venv_gpu_build/Scripts/deactivate.bat
-NEWS
-README
-THANKS.txt
-upx-doc.html
-upx-doc.txt
-upx.1
-COPYING
-install.bat
-install.py
+
