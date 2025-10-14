@@ -1,4 +1,4 @@
-# 🎭 HoloLiveTL - Real-Time Japanese Translation for VTuber Streams
+#  HoloLiveTL - Real-Time Japanese Translation for VTuber Streams
 
 <div align="center">
 
@@ -17,7 +17,6 @@
 
 HoloLiveTL is a powerful real-time translation application that captures your computer's audio, translates spoken Japanese into English text, and displays it as a customizable subtitle overlay. Perfect for watching Japanese VTuber livestreams, anime, or any Japanese content without native English subtitles.
 
-Built with the state-of-the-art `kotoba-tech/kotoba-whisper-bilingual-v1.0` model and featuring intelligent Voice Activity Detection (VAD) for natural, context-aware translations.
 
 ## ✨ Features
 
@@ -98,21 +97,6 @@ Built with the state-of-the-art `kotoba-tech/kotoba-whisper-bilingual-v1.0` mode
 - **Ctrl+S**: Save entire session transcript
 - **Esc**: Stop translation immediately
 
-## 🎭 VTuber Setup Guide
-
-### Audio Capture Setup
-
-#### Option A: VB-Cable (Recommended)
-1. Download and install [VB-Audio Virtual Cable](https://vb-audio.com/Cable/)
-2. Set "CABLE Input" as your default Windows playback device
-3. In LiveTranslate, select "CABLE Output" as audio device
-4. Stream audio will now be captured automatically
-
-#### Option B: Stereo Mix
-1. Enable "Stereo Mix" in Windows Sound Settings
-2. Set as default recording device
-3. Select "Stereo Mix" in LiveTranslate
-4. Captures all system audio including streams
 
 ### Optimal Settings for VTuber Streams
 
@@ -152,21 +136,6 @@ Built with the state-of-the-art `kotoba-tech/kotoba-whisper-bilingual-v1.0` mode
 - **Text Shadow**: Improves readability over any background
 - **Window Opacity**: Overall transparency level
 
-## 📁 Project Structure
-
-```
-HoloLiveTL/
-├── LiveTranslate.py          # Main application
-├── requirements.txt          # Python dependencies
-├── build_*.py               # Build scripts for executables
-├── presets/                 # Configuration presets
-│   ├── VTuber_Chatting.json
-│   ├── VTuber_Gaming.json
-│   └── VTuber_Singing.json
-├── VTUBER_SETUP_GUIDE.md    # Detailed VTuber setup instructions
-├── TV_AUDIO_SETUP_GUIDE.md  # TV/system audio setup
-└── BUILD_README.md          # Executable building instructions
-```
 
 ## 🏗️ Building
 
@@ -185,30 +154,7 @@ pyinstaller --onefile --windowed --name "LiveTranslate" LiveTranslate.py
 
 See [BUILD_README.md](BUILD_README.md) for detailed building instructions.
 
-## 🔧 Troubleshooting
 
-### Common Issues
-
-**No Audio Detected**
-- Verify audio device selection
-- Check Windows audio settings
-- Test with different audio source
-
-**Poor Translation Quality**
-- Ensure clear, non-overlapping speech
-- Adjust confidence thresholds
-- Check background noise levels
-- Verify CUDA GPU acceleration
-
-**Performance Issues**
-- Install CUDA-enabled PyTorch
-- Close resource-intensive applications
-- Lower audio quality settings if needed
-
-**Model Download Fails**
-- Check internet connection
-- Verify firewall settings
-- Try manual model download
 
 ### Getting Help
 - Check the console output for detailed error messages
@@ -243,11 +189,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you find this project helpful, please consider giving it a star! ⭐
 
 ---
-
-<div align="center">
-
-**Made with ❤️ for the VTuber community**
-
-[Report Bug](https://github.com/Shemo37/HoloLiveTL/issues) • [Request Feature](https://github.com/Shemo37/HoloLiveTL/issues) • [Join Discussion](https://github.com/Shemo37/HoloLiveTL/discussions)
-
-</div>
