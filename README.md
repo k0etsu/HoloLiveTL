@@ -175,13 +175,6 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
-
-- **Kotoba Technologies** for the excellent bilingual Whisper model
-- **Silero Team** for the VAD model
-- **Hugging Face** for the transformers library
-- **VTuber Community** for inspiration and feedback
-- **OpenAI** for the original Whisper architecture
 
 ## 🌟 Star History
 
