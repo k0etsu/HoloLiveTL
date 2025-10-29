@@ -51,7 +51,6 @@ HoloLiveTL is a powerful real-time translation application that captures your co
 ### Prerequisites
 - **Python 3.8+**
 - **NVIDIA GPU with CUDA** (highly recommended for real-time performance)
-- **Virtual Audio Device** (VB-Cable recommended) or Stereo Mix enabled
 
 ### Quick Setup
 
