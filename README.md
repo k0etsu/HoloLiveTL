@@ -9,8 +9,6 @@
 
 *Real-time Japanese to English subtitle overlay for VTuber livestreams and Japanese content*
 
-[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [VTuber Setup](#-vtuber-setup-guide) • [Building](#-building)
-
 </div>
 
 ## Demo
@@ -21,13 +19,7 @@
 HoloLiveTL is a powerful real-time translation application that captures your computer's audio, translates spoken Japanese into English text, and displays it as a customizable subtitle overlay. Perfect for watching Japanese VTuber livestreams, anime, or any Japanese content without native English subtitles.
 
 
-
-
-See [BUILD_README.md](BUILD_README.md) for detailed building instructions.
-
-
-
-## 🌟 Star History
+## 🌟 Star
 
 If you find this project helpful, please consider giving it a star! ⭐
 
