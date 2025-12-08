@@ -6,7 +6,7 @@ SUBSTRING_HALLUCINATION_FILTER = [
     "thank you for watching", "thanks for watching", "don't forget",
     "to subscribe", "subscribe", "bell icon", "see you next time",
     "in the next video", "like and subscribe", "hit the bell",
-    "comment below", "let me know", "see you later", "as a language model", 
+    "comment below", "let me know", "as a language model", 
     "provide more context", "i'm an ai", "i cannot", "i don't have access",
     "please provide", "more information", "context is needed",
     "in central tokyo, the temperature is likely to rise rapidly from morning",
@@ -70,8 +70,10 @@ def is_hallucination(text, translator, translation_history):
     
     # Check substring matches
     for phrase in SUBSTRING_HALLUCINATION_FILTER:
-        if phrase in text_lower:
-            return True
+  
+    pattern = r'\b' + re.escape(phrase) + r'\b'
+    if re.search(pattern, text_lower):
+        return True
     
     # Quality checks
     for pattern_list in QUALITY_INDICATORS.values():
