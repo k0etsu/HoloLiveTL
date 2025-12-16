@@ -1,4 +1,3 @@
-"""Configuration management for Live Translator"""
 import json
 import os
 
