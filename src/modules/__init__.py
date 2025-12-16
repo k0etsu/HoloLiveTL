@@ -1,6 +1,4 @@
-"""
-Core modules for Live Translator
-"""
+
 
 from .config import Config
 from .stats import TranslatorStats
