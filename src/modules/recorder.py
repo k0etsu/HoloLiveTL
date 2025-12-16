@@ -1,4 +1,4 @@
-"""Audio recording threads for Live Translator"""
+
 import os
 import numpy as np
 import torch
