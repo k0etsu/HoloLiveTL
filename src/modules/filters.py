@@ -1,4 +1,3 @@
-"""Text filtering and quality assessment for Live Translator"""
 import re
 
 # Hallucination filters
