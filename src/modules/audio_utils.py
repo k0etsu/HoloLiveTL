@@ -1,4 +1,4 @@
-"""Audio processing utilities for Live Translator"""
+
 import numpy as np
 import soundcard as sc
 from scipy.signal import butter, lfilter
