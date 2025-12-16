@@ -1,4 +1,4 @@
-"""Model management and download utilities for Live Translator"""
+
 import os
 import shutil
 import requests
