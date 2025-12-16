@@ -1,4 +1,4 @@
-"""Statistics tracking for Live Translator"""
+
 import time
 
 class TranslatorStats:
