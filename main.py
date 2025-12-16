@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Live Audio Translator - Organized Version
-Main entry point for the application
-"""
 import sys
 import os
 import warnings
