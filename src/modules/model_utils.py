@@ -148,7 +148,7 @@ def get_kotoba_generate_kwargs(task="translate", target_language="en"):
         "task": task,
         "temperature": 0.08,
         "max_new_tokens": 224,
-        "no_repeat_ngram_size": 2,
+        "no_repeat_ngram_size": 3,
         "suppress_tokens": [-1],
     }
 
