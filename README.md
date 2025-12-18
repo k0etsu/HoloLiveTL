@@ -16,7 +16,7 @@
 
 ## 🌟 Overview
 
-HoloLiveTL is a real-time translation application that helps you understand Japanese content instantly.Because the app is translating in real time, you might see a spike in GPU usage. Make sure your system can handle the extra load
+HoloLiveTL is a real-time translation sound into englisg subtitle.Beware spike in GPU usage. Make sure your system can handle the extra load
 
 
 ## 🌟 Star
