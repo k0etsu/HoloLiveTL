@@ -96,10 +96,6 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             start_time = time.time()
             had_translation, was_hallucination = False, False
             try:
-                # try:
-                #     audio_chunk_np = audio_queue.get(timeout=1)
-                # except Empty as e:
-                #     pass
                 audio_chunk_np = audio_queue.get(timeout=1)
 
                 audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
