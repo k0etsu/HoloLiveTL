@@ -9,7 +9,7 @@ SUBSTRING_HALLUCINATION_FILTER = [
     "provide more context", "i'm an ai", "i cannot", "i don't have access",
     "please provide", "more information", "context is needed",
     "in central tokyo, the temperature is likely to rise rapidly from morning",
-    "in central tokyo", "the temperature is likely to rise"
+    "in central tokyo", "the temperature is likely to rise", "this is a sound"
 ]
 
 EXACT_MATCH_HALLUCINATION_FILTER = {
