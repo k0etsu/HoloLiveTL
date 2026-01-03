@@ -19,7 +19,7 @@ EXACT_MATCH_HALLUCINATION_FILTER = {
     "um", "uh", "hmm", "well", "so", "like", "you know", "that's right", 
     "such as", "i see, i see", "alright i see", "ah i see", "sound good", 
     "oh i see", "heav-ho", "mm-hmm", "uh-huh", "yeah", "yep", "nope", "nah",
-    "I'm not sure what "
+    "\"I'm not sure what \""
 }
 
 PRESERVE_SOUNDS = {
