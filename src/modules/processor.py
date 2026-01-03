@@ -5,6 +5,7 @@ import torch
 import string
 import traceback
 from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
+from queue import Empty
 from .audio_utils import enhance_audio_quality
 from .model_utils import ensure_model_downloaded, get_kotoba_generate_kwargs, get_kotoba_pipeline_kwargs, optimize_for_vtuber_content
 from .filters import post_process_translation, is_hallucination
@@ -95,6 +96,10 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
             start_time = time.time()
             had_translation, was_hallucination = False, False
             try:
+                # try:
+                #     audio_chunk_np = audio_queue.get(timeout=1)
+                # except Empty as e:
+                #     pass
                 audio_chunk_np = audio_queue.get(timeout=1)
 
                 audio_chunk_np = enhance_audio_quality(audio_chunk_np.flatten(), sample_rate=SAMPLE_RATE)
@@ -176,6 +181,8 @@ def processor_thread(stop_event, audio_queue, config, stats, gui_queue):
 
                 stats.add_chunk(time.time() - start_time, had_translation, was_hallucination)
 
+            except Empty as e:
+                stats.add_chunk(time.time() - start_time, False, False)
             except Exception as e:
                 if "timeout" not in str(e).lower():
                     print(f"🔴 Processor error: {e}")

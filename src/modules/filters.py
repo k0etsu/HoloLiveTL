@@ -69,10 +69,9 @@ def is_hallucination(text, translator, translation_history):
     
     # Check substring matches
     for phrase in SUBSTRING_HALLUCINATION_FILTER:
-  
-    pattern = r'\b' + re.escape(phrase) + r'\b'
-    if re.search(pattern, text_lower):
-        return True
+        pattern = r'\b' + re.escape(phrase) + r'\b'
+        if re.search(pattern, text_lower):
+            return True
     
     # Quality checks
     for pattern_list in QUALITY_INDICATORS.values():
